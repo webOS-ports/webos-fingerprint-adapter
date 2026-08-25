@@ -1,0 +1,5 @@
+{
+ "allowedNames": ["com.webos.service.fingerprint"],
+ "fingerprint.operation": ["dev"],
+ "fingerprint.query": ["dev"]
+}

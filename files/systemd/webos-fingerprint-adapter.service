@@ -1,0 +1,13 @@
+[Unit]
+Description=webOS fingerprint adapter
+Requires=ls-hubd.service
+After=ls-hubd.service droidian-fpd.service
+Wants=droidian-fpd.service
+
+[Service]
+Type=simple
+Restart=on-failure
+ExecStart=/usr/sbin/webos-fingerprint-adapter
+
+[Install]
+WantedBy=multi-user.target

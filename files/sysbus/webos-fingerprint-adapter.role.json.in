@@ -1,0 +1,13 @@
+{
+    "exeName":"@WEBOS_INSTALL_SBINDIR@/webos-fingerprint-adapter",
+    "trustLevel": "oem",
+    "type": "privileged",
+    "allowedNames": ["com.webos.service.fingerprint"],
+    "permissions": [
+        {
+            "service":"com.webos.service.fingerprint",
+            "inbound":["*"],
+            "outbound":["*"]
+        }
+    ]
+}

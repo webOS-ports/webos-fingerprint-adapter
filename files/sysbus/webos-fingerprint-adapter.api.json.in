@@ -1,0 +1,15 @@
+{
+    "fingerprint.operation": [
+        "com.webos.service.fingerprint/getStatus",
+        "com.webos.service.fingerprint/getFingerprints",
+        "com.webos.service.fingerprint/enroll",
+        "com.webos.service.fingerprint/identify",
+        "com.webos.service.fingerprint/abort",
+        "com.webos.service.fingerprint/remove",
+        "com.webos.service.fingerprint/clear"
+    ],
+    "fingerprint.query": [
+        "com.webos.service.fingerprint/getStatus",
+        "com.webos.service.fingerprint/getFingerprints"
+    ]
+}

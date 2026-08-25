@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=com.webos.service.fingerprint
+Exec=@WEBOS_INSTALL_SBINDIR@/webos-fingerprint-adapter
+Type=static

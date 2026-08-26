@@ -120,7 +120,15 @@ static jvalue_ref build_status(struct fingerprint_service *service)
 static void state_changed_cb(struct fpd_client *client, void *user_data)
 {
 	struct fingerprint_service *service = user_data;
+	const char *state = fpd_client_get_state(client);
 	jvalue_ref reply_obj;
+
+	/* Fresh operation: drop any error left over from the previous one. */
+	if (!g_strcmp0(state, FPD_STATE_ENROLLING) ||
+	    !g_strcmp0(state, FPD_STATE_IDENTIFYING)) {
+		g_free(service->last_error);
+		service->last_error = NULL;
+	}
 
 	reply_obj = build_status(service);
 	luna_service_post_subscription(service->handle, "/", "getStatus", reply_obj);
@@ -136,7 +144,7 @@ static void state_changed_cb(struct fpd_client *client, void *user_data)
 
 static void post_finished_error(struct fingerprint_service *service,
                                 const char *method, gboolean identify,
-                                const char *fallback)
+                                const char *error_text)
 {
 	jvalue_ref reply_obj = jobject_create();
 
@@ -144,10 +152,29 @@ static void post_finished_error(struct fingerprint_service *service,
 	jobject_put(reply_obj, J_CSTR_TO_JVAL("finished"), jboolean_create(true));
 	if (identify)
 		jobject_put(reply_obj, J_CSTR_TO_JVAL("identified"), jboolean_create(false));
-	jobject_put(reply_obj, J_CSTR_TO_JVAL("errorText"),
-	            jstring_create(service->last_error ? service->last_error : fallback));
+	jobject_put(reply_obj, J_CSTR_TO_JVAL("errorText"), jstring_create(error_text));
 
 	luna_service_post_subscription(service->handle, "/", method, reply_obj);
+	j_release(&reply_obj);
+}
+
+/*
+ * A single rejected touch while identifying. fpd keeps the sensor armed and
+ * says FINGER_NOT_RECOGNIZED per capture rather than ending the operation, so
+ * this is posted as a NON-terminal miss - the client shows feedback and counts
+ * it, but the subscription stays open and no re-arm is needed.
+ */
+static void post_identify_miss(struct fingerprint_service *service)
+{
+	jvalue_ref reply_obj = jobject_create();
+
+	jobject_put(reply_obj, J_CSTR_TO_JVAL("returnValue"), jboolean_create(true));
+	jobject_put(reply_obj, J_CSTR_TO_JVAL("identified"), jboolean_create(false));
+	jobject_put(reply_obj, J_CSTR_TO_JVAL("finished"), jboolean_create(false));
+	jobject_put(reply_obj, J_CSTR_TO_JVAL("errorText"),
+	            jstring_create("FINGER_NOT_RECOGNIZED"));
+
+	luna_service_post_subscription(service->handle, "/", "identify", reply_obj);
 	j_release(&reply_obj);
 }
 
@@ -185,6 +212,10 @@ static void event_cb(struct fpd_client *client, enum fpd_event event,
 	case FPD_EVENT_ERROR_INFO:
 		g_free(service->last_error);
 		service->last_error = g_strdup(finger_or_info);
+		/* fpd reports each non-matching capture as FINGER_NOT_RECOGNIZED and
+		 * stays armed; surface it so the lockscreen gives per-touch feedback. */
+		if (identifying && !g_strcmp0(finger_or_info, "FINGER_NOT_RECOGNIZED"))
+			post_identify_miss(service);
 		break;
 
 	case FPD_EVENT_ADDED:
@@ -214,15 +245,18 @@ static void event_cb(struct fpd_client *client, enum fpd_event event,
 
 	case FPD_EVENT_FAILED:
 		if (enrolling)
-			post_finished_error(service, "enroll", FALSE, "Enrollment failed");
+			post_finished_error(service, "enroll", FALSE,
+			                    service->last_error ? service->last_error : "Enrollment failed");
 		else if (identifying)
-			post_finished_error(service, "identify", TRUE, "Not recognized");
+			post_finished_error(service, "identify", TRUE, "Aborted");
 
 		g_free(service->last_error);
 		service->last_error = NULL;
 		break;
 
 	case FPD_EVENT_ABORTED:
+		/* Cancel/timeout: always "Aborted" so the client never counts it as a
+		 * failed read, whatever the last ErrorInfo happened to be. */
 		if (enrolling)
 			post_finished_error(service, "enroll", FALSE, "Aborted");
 		else if (identifying)

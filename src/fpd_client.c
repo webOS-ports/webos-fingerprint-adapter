@@ -515,6 +515,32 @@ void fpd_client_remove(struct fpd_client *client, const char *finger,
 	                                      fpd_req_new(client, cb, user_data));
 }
 
+static void rename_ready(GObject *source, GAsyncResult *res, gpointer user_data)
+{
+	struct fpd_req *req = user_data;
+	GError *error = NULL;
+	gint reply = 0;
+	gboolean success;
+
+	success = fpd_interface_fingerprint_call_rename_finish(
+		FPD_INTERFACE_FINGERPRINT(source), &reply, res, &error);
+
+	reply_call_ready(req, success, reply, error);
+}
+
+void fpd_client_rename(struct fpd_client *client, const char *finger,
+                       const char *new_name, fpd_reply_cb cb, void *user_data)
+{
+	if (!client->daemon) {
+		cb(-1, "Fingerprint daemon not available", user_data);
+		return;
+	}
+
+	fpd_interface_fingerprint_call_rename(client->daemon, finger, new_name,
+	                                      client->cancellable, rename_ready,
+	                                      fpd_req_new(client, cb, user_data));
+}
+
 static void clear_ready(GObject *source, GAsyncResult *res, gpointer user_data)
 {
 	struct fpd_req *req = user_data;

@@ -6,6 +6,7 @@
         "com.webos.service.fingerprint/identify",
         "com.webos.service.fingerprint/abort",
         "com.webos.service.fingerprint/remove",
+        "com.webos.service.fingerprint/rename",
         "com.webos.service.fingerprint/clear"
     ],
     "fingerprint.query": [

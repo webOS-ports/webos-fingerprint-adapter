@@ -36,6 +36,11 @@
       <arg name="finger" type="s" direction="in"/>
       <arg name="reply" type="i" direction="out"/>
     </method>
+    <method name="Rename">
+      <arg name="finger" type="s" direction="in"/>
+      <arg name="newName" type="s" direction="in"/>
+      <arg name="reply" type="i" direction="out"/>
+    </method>
     <method name="Clear"/>
     <method name="GetState">
       <arg name="state" type="s" direction="out"/>

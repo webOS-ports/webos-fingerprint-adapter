@@ -429,6 +429,39 @@ static bool _service_remove_cb(LSHandle *handle, LSMessage *message, void *user_
 	return true;
 }
 
+static bool _service_rename_cb(LSHandle *handle, LSMessage *message, void *user_data)
+{
+	struct fingerprint_service *service = user_data;
+	jvalue_ref parsed_obj = NULL;
+	gchar *finger = NULL;
+	gchar *new_name = NULL;
+
+	parsed_obj = luna_service_message_parse_and_validate(LSMessageGetPayload(message));
+	if (!parsed_obj) {
+		luna_service_message_reply_error_bad_json(handle, message);
+		return true;
+	}
+
+	finger = get_string_param(parsed_obj, "finger");
+	new_name = get_string_param(parsed_obj, "newName");
+	j_release(&parsed_obj);
+
+	if (!finger || !strlen(finger) || !new_name || !strlen(new_name)) {
+		luna_service_message_reply_error_invalid_params(handle, message);
+		g_free(finger);
+		g_free(new_name);
+		return true;
+	}
+
+	fpd_client_rename(service->client, finger, new_name, simple_reply_cb,
+	                  fingerprint_request_new(handle, message, false));
+
+	g_free(finger);
+	g_free(new_name);
+
+	return true;
+}
+
 static bool _service_clear_cb(LSHandle *handle, LSMessage *message, void *user_data)
 {
 	struct fingerprint_service *service = user_data;
@@ -446,6 +479,7 @@ static LSMethod _fingerprint_service_methods[] = {
 	{ "identify", _service_identify_cb },
 	{ "abort", _service_abort_cb },
 	{ "remove", _service_remove_cb },
+	{ "rename", _service_rename_cb },
 	{ "clear", _service_clear_cb },
 	{ NULL, NULL },
 };

@@ -94,6 +94,8 @@ void fpd_client_verify(struct fpd_client *client, fpd_reply_cb cb, void *user_da
 void fpd_client_abort(struct fpd_client *client, fpd_reply_cb cb, void *user_data);
 void fpd_client_remove(struct fpd_client *client, const char *finger,
                        fpd_reply_cb cb, void *user_data);
+void fpd_client_rename(struct fpd_client *client, const char *finger,
+                       const char *new_name, fpd_reply_cb cb, void *user_data);
 /* Clear has no reply value on the wire; reply is 0 on delivery */
 void fpd_client_clear(struct fpd_client *client, fpd_reply_cb cb, void *user_data);
 

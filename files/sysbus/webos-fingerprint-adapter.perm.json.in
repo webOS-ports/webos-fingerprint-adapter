@@ -1,5 +1,10 @@
 {
     "com.webos.service.fingerprint": [
-        "fingerprint.operation"
+        "fingerprint.operation",
+        "fingerprint.query"
+    ],
+    "com.webos.surfacemanager*": [
+        "fingerprint.operation",
+        "fingerprint.query"
     ]
 }

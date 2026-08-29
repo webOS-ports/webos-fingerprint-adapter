@@ -26,6 +26,11 @@ is a normal state rather than an error: the service simply reports
 Luna service API
 ----------------
 
+The full reference — parameter tables, subscription payloads, error texts and
+the D-Bus mapping — lives in
+[docs/com.webos.service.fingerprint.md](docs/com.webos.service.fingerprint.md).
+A summary:
+
 ### com.webos.service.fingerprint/getStatus
 
 Subscribable. Reports the daemon state and the enrolled fingerprints.
@@ -98,6 +103,13 @@ Removes one enrolled fingerprint by name:
 
 The reply confirms the removal started; the list update reaches getStatus
 subscribers once fpd finishes.
+
+### com.webos.service.fingerprint/rename
+
+Renames one enrolled fingerprint:
+
+    luna-send -n 1 luna://com.webos.service.fingerprint/rename \
+        '{"finger":"right-index","newName":"right-thumb"}'
 
 ### com.webos.service.fingerprint/clear
 

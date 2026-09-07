@@ -23,13 +23,26 @@
 #include <pbnjson.h>
 
 /**
- * Client for the droidian-fpd D-Bus API, one bus name on the system bus:
+ * Client for the fingerprint daemon's D-Bus API, one bus name on the system
+ * bus:
  *
- *   org.droidian.fingerprint    the fingerprint daemon
+ *   io.FuriOS.Biomd    FuriLabs' biomd, on /io/FuriOS/Biomd/Fingerprint
  *
- * The name is watched, so fpd restarting or not being installed at all is a
- * normal state rather than an error: the client simply reports unavailable
- * and re-attaches when fpd comes back.
+ * The name is watched, so the daemon restarting or not being installed at all
+ * is a normal state rather than an error: the client simply reports
+ * unavailable and re-attaches when it comes back.
+ *
+ * This used to talk to droidian-fpd on org.droidian.fingerprint. That path is
+ * dead on Halium here: fpd reaches the fingerprint HAL through libhybris, and
+ * the shim it dlopens (libbiometry_fp_api.so) is not built into the Android
+ * system image, so it segfaults on startup. biomd reaches the same HAL over
+ * binder through libgbinder instead, needing nothing from the Android side.
+ *
+ * The names below are still fpd's. The interface this header describes is the
+ * adapter's own, the service layer is written against it, and its vocabulary
+ * (FPSTATE_*, FPERROR_*, FPACQUIRED_*, the fpreply codes) is what the LS2 API
+ * and its clients already speak. Renaming it would churn the webOS-facing API
+ * for nothing, so fpd_client.c maps biomd's integer enums onto it instead.
  */
 
 struct fpd_client;

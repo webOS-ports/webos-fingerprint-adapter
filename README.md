@@ -3,25 +3,29 @@ webos-fingerprint-adapter
 
 Summary
 -------
-Bridges the droidian-fpd D-Bus API onto the luna-service2 bus as `com.webos.service.fingerprint`.
+Bridges the biomd D-Bus API onto the luna-service2 bus as `com.webos.service.fingerprint`.
 
 Description
 -----------
 On Halium devices the fingerprint sensor is reached through the Android
 biometrics HAL rather than anything the Linux side knows natively, so LuneOS
-uses [droidian-fpd](https://github.com/droidian/droidian-fpd) (the Droidian
-fork of
-[sailfish-fpd-community](https://github.com/sailfishos-open/sailfish-fpd-community),
-which reuses the HAL bridge from UBports
-[biometryd](https://gitlab.com/ubports/development/core/biometryd)). fpd speaks
-D-Bus; webOS apps and the shell speak luna-service2. This daemon sits between
-the two.
+uses [biomd](https://github.com/FuriLabs/biomd), FuriLabs' biometrics daemon.
+It reaches the HAL over binder via libgbinder -
+`android.hardware.biometrics.fingerprint@2.1` together with
+`android.hardware.gatekeeper@1.0` - and needs nothing installed on the Android
+side. biomd speaks D-Bus; webOS apps and the shell speak luna-service2. This
+daemon sits between the two.
 
-    fingerprint HAL  ──hybris──▶  droidian-fpd  ──D-Bus──▶  webos-fingerprint-adapter  ──LS2──▶  apps
+    fingerprint HAL  ──binder──▶  biomd  ──D-Bus──▶  webos-fingerprint-adapter  ──LS2──▶  apps
 
-It watches the fpd bus name, so fpd restarting, or not being installed at all,
-is a normal state rather than an error: the service simply reports
-`available: false` and re-attaches when fpd comes back.
+It watches the biomd bus name, so biomd restarting, or not being installed at
+all, is a normal state rather than an error: the service simply reports
+`available: false` and re-attaches when biomd comes back.
+
+This replaced [droidian-fpd](https://github.com/droidian/droidian-fpd), which
+cannot work on a Halium port: fpd reaches the HAL through libhybris and dlopens
+`libbiometry_fp_api.so`, a shim that is not built into the Android system
+image, then calls through the NULL result and dies on every start.
 
 Luna service API
 ----------------

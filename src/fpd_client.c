@@ -25,6 +25,10 @@
 #define BIOMD_SERVICE		"io.FuriOS.Biomd"
 #define BIOMD_OBJECT_PATH	"/io/FuriOS/Biomd/Fingerprint"
 
+/* Answered whenever the daemon cannot be reached, however that turns out:
+ * not on the bus at all, or on it but gone by the time the call lands. */
+#define FPD_DAEMON_UNAVAILABLE	"Fingerprint daemon not available"
+
 #define FPD_STATE_UNKNOWN		"FPSTATE_UNKNOWN"
 #define FPD_STATE_IDLE			"FPSTATE_IDLE"
 #define FPD_STATE_ENROLLING		"FPSTATE_ENROLLING"
@@ -506,10 +510,54 @@ jvalue_ref fpd_client_get_fingerprints_json(struct fpd_client *client)
 /*
  * Method calls. biomd answers with a plain boolean rather than fpd's fpreply
  * code, so success becomes FPD_REPLY_STARTED and a refusal FPD_REPLY_FAILED.
- * The D-Bus level failing (biomd crashed mid-call, request timed out, or it
- * rejected the request outright with an error) is reported as -1 with the
- * GError text, as before.
  */
+
+/*
+ * A call can also fail at the D-Bus level: biomd rejected the request outright
+ * with an error, crashed mid-call, or never answered. A GError message is a
+ * daemon-internal string behind a "GDBus.Error:org.freedesktop.DBus.Error.X:"
+ * prefix, which is no use to whoever is looking at the screen, so classify it
+ * into the reply codes fingerprint_service.c already has wording for and pass
+ * no text - that wording is then what the client shows.
+ *
+ * Returns the reply code; *text stays NULL unless a specific message beats
+ * the vocabulary.
+ */
+static int fpd_reply_from_gerror(const GError *error, const char **text)
+{
+	*text = NULL;
+
+	if (g_error_matches(error, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS))
+		return FPD_REPLY_KEY_IS_INVALID;
+
+	/* The daemon is gone or not answering. Indistinguishable, to a caller,
+	 * from it never having been there, so say the same thing. */
+	if (g_error_matches(error, G_DBUS_ERROR, G_DBUS_ERROR_SERVICE_UNKNOWN) ||
+	    g_error_matches(error, G_DBUS_ERROR, G_DBUS_ERROR_NAME_HAS_NO_OWNER) ||
+	    g_error_matches(error, G_DBUS_ERROR, G_DBUS_ERROR_NO_REPLY) ||
+	    g_error_matches(error, G_DBUS_ERROR, G_DBUS_ERROR_TIMEOUT) ||
+	    g_error_matches(error, G_DBUS_ERROR, G_DBUS_ERROR_TIMED_OUT) ||
+	    g_error_matches(error, G_DBUS_ERROR, G_DBUS_ERROR_DISCONNECTED)) {
+		*text = FPD_DAEMON_UNAVAILABLE;
+		return FPD_REPLY_FAILED;
+	}
+
+	/*
+	 * biomd raises plain Failed for both "that finger is already enrolled"
+	 * and "something else is running", with no distinct error name, so the
+	 * message is the only thing telling them apart. If upstream rewords
+	 * them these stop matching and the caller gets the generic "Operation
+	 * failed" - less specific, but never wrong.
+	 */
+	if (g_error_matches(error, G_DBUS_ERROR, G_DBUS_ERROR_FAILED) && error->message) {
+		if (strstr(error->message, "already enrolled"))
+			return FPD_REPLY_KEY_ALREADY_EXISTS;
+		if (strstr(error->message, "in progress"))
+			return FPD_REPLY_ALREADY_BUSY;
+	}
+
+	return FPD_REPLY_FAILED;
+}
 
 static struct fpd_req *fpd_req_new(struct fpd_client *client, fpd_reply_cb cb,
                                    void *user_data)
@@ -541,10 +589,19 @@ static void reply_call_ready(struct fpd_req *req, gboolean called, gboolean succ
 /* Same, for a call that failed at the D-Bus level */
 static void reply_call_error(struct fpd_req *req, GError *error)
 {
+	const char *text = NULL;
+	int reply;
+
 	if (req->op_started != OP_NONE && req->client->active_op == req->op_started)
 		req->client->active_op = OP_NONE;
 
-	req->cb(-1, error->message, req->user_data);
+	reply = fpd_reply_from_gerror(error, &text);
+
+	/* The client is given the mapped wording, so keep the daemon's own
+	 * words where someone debugging this can still find them. */
+	g_debug("biomd refused the call: %s", error->message);
+
+	req->cb(reply, text, req->user_data);
 
 	g_error_free(error);
 	g_free(req);
@@ -578,7 +635,7 @@ void fpd_client_enroll(struct fpd_client *client, const char *finger,
 	struct fpd_req *req;
 
 	if (!client->daemon) {
-		cb(-1, "Fingerprint daemon not available", user_data);
+		cb(FPD_REPLY_FAILED, FPD_DAEMON_UNAVAILABLE, user_data);
 		return;
 	}
 
@@ -608,7 +665,7 @@ void fpd_client_identify(struct fpd_client *client, fpd_reply_cb cb, void *user_
 	struct fpd_req *req;
 
 	if (!client->daemon) {
-		cb(-1, "Fingerprint daemon not available", user_data);
+		cb(FPD_REPLY_FAILED, FPD_DAEMON_UNAVAILABLE, user_data);
 		return;
 	}
 
@@ -661,7 +718,7 @@ void fpd_client_abort(struct fpd_client *client, fpd_reply_cb cb, void *user_dat
 	gboolean enrolling;
 
 	if (!client->daemon) {
-		cb(-1, "Fingerprint daemon not available", user_data);
+		cb(FPD_REPLY_FAILED, FPD_DAEMON_UNAVAILABLE, user_data);
 		return;
 	}
 
@@ -692,11 +749,35 @@ static void remove_ready(GObject *source, GAsyncResult *res, gpointer user_data)
 	reply_call_done(req, called, success, error);
 }
 
+/*
+ * RemoveFinger and RenameFinger answer with a bare FALSE whatever went wrong,
+ * so "no such finger" and "the daemon could not do it" are indistinguishable
+ * in the reply and both would surface as "Operation failed". The enrolled list
+ * cached here is the same one getStatus just handed the client, so checking it
+ * first turns the common mistake - naming a finger that is not enrolled, or
+ * renaming onto one that is - into the error text the API documents.
+ *
+ * Only the answerable cases are decided here; anything that passes is still
+ * sent to biomd, which remains the authority.
+ */
+static gboolean fpd_client_has_finger(struct fpd_client *client, const char *finger)
+{
+	if (!client->fingers || !finger)
+		return FALSE;
+
+	return g_strv_contains((const gchar *const *) client->fingers, finger);
+}
+
 void fpd_client_remove(struct fpd_client *client, const char *finger,
                        fpd_reply_cb cb, void *user_data)
 {
 	if (!client->daemon) {
-		cb(-1, "Fingerprint daemon not available", user_data);
+		cb(FPD_REPLY_FAILED, FPD_DAEMON_UNAVAILABLE, user_data);
+		return;
+	}
+
+	if (!fpd_client_has_finger(client, finger)) {
+		cb(FPD_REPLY_KEY_DOES_NOT_EXIST, NULL, user_data);
 		return;
 	}
 
@@ -722,7 +803,20 @@ void fpd_client_rename(struct fpd_client *client, const char *finger,
                        const char *new_name, fpd_reply_cb cb, void *user_data)
 {
 	if (!client->daemon) {
-		cb(-1, "Fingerprint daemon not available", user_data);
+		cb(FPD_REPLY_FAILED, FPD_DAEMON_UNAVAILABLE, user_data);
+		return;
+	}
+
+	if (!fpd_client_has_finger(client, finger)) {
+		cb(FPD_REPLY_KEY_DOES_NOT_EXIST, NULL, user_data);
+		return;
+	}
+
+	/* Renaming a finger to what it is already called is a no-op, not a
+	 * collision - only a different finger holding the name is. */
+	if (g_strcmp0(finger, new_name) != 0 &&
+	    fpd_client_has_finger(client, new_name)) {
+		cb(FPD_REPLY_KEY_ALREADY_EXISTS, NULL, user_data);
 		return;
 	}
 
@@ -749,8 +843,11 @@ static void clear_one_ready(GObject *source, GAsyncResult *res, gpointer user_da
 
 	if (req->failed_reply == FPD_REPLY_STARTED) {
 		if (!called) {
-			req->failed_reply = -1;
-			req->failed_text = g_strdup(error->message);
+			const char *text = NULL;
+
+			req->failed_reply = fpd_reply_from_gerror(error, &text);
+			req->failed_text = g_strdup(text);
+			g_debug("biomd refused the call: %s", error->message);
 		} else if (!success) {
 			req->failed_reply = FPD_REPLY_FAILED;
 		}
@@ -774,7 +871,7 @@ void fpd_client_clear(struct fpd_client *client, fpd_reply_cb cb, void *user_dat
 	guint n;
 
 	if (!client->daemon) {
-		cb(-1, "Fingerprint daemon not available", user_data);
+		cb(FPD_REPLY_FAILED, FPD_DAEMON_UNAVAILABLE, user_data);
 		return;
 	}
 

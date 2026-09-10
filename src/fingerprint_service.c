@@ -71,7 +71,10 @@ static void fingerprint_request_free(struct fingerprint_request *req)
 	g_free(req);
 }
 
-/* fpreply codes from droidian-fpd, see files/xml/fpd.xml */
+/* The adapter's own reply vocabulary, kept because the LS2 API and its
+ * clients speak it. biomd answers each call with a plain boolean, so the
+ * client layer now only ever produces STARTED and FAILED; the remaining
+ * codes are retained so existing error text stays addressable. */
 static const char *fpd_reply_to_error_text(int reply)
 {
 	switch (reply) {

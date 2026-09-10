@@ -6,12 +6,12 @@ API reference for the luna-service2 (LS2) API exposed by
 ## API Summary
 
 Provides fingerprint enrollment, identification and management on LuneOS by
-bridging the [droidian-fpd](https://github.com/droidian/droidian-fpd) D-Bus
-daemon onto the LS2 bus. On Halium devices the fingerprint sensor is only
-reachable through the Android biometrics HAL; fpd wraps that HAL and this
-service translates its D-Bus API into a webOS-style service API.
+bridging the [biomd](https://github.com/FuriLabs/biomd) D-Bus daemon onto the
+LS2 bus. On Halium devices the fingerprint sensor is only reachable through the
+Android biometrics HAL; biomd wraps that HAL over binder and this service
+translates its D-Bus API into a webOS-style service API.
 
-    fingerprint HAL ──hybris──▶ droidian-fpd ──D-Bus──▶ webos-fingerprint-adapter ──LS2──▶ apps
+    fingerprint HAL ──binder──▶ biomd ──D-Bus──▶ webos-fingerprint-adapter ──LS2──▶ apps
 
 | | |
 |---|---|
@@ -19,7 +19,7 @@ service translates its D-Bus API into a webOS-style service API.
 | Category | `/` (root) |
 | Executable | `@WEBOS_INSTALL_SBINDIR@/webos-fingerprint-adapter` |
 | Trust level | `oem`, `privileged` |
-| Upstream daemon | `org.droidian.fingerprint` on the D-Bus system bus |
+| Upstream daemon | `io.FuriOS.Biomd` on the D-Bus system bus |
 
 ### Methods
 
@@ -49,13 +49,13 @@ manifest.
 
 ### Availability
 
-The adapter watches the `org.droidian.fingerprint` bus name. fpd restarting,
-or not being installed at all, is a normal state rather than an error:
-`getStatus` reports `"available": false` and the service re-attaches
-automatically when fpd (re)appears. `available` becomes `true` once fpd is on
-the bus **and** has answered the adapter's first state query.
+The adapter watches the `io.FuriOS.Biomd` bus name. biomd restarting, or not
+being installed at all, is a normal state rather than an error: `getStatus`
+reports `"available": false` and the service re-attaches automatically when
+biomd (re)appears. `available` becomes `true` once biomd is on the bus **and**
+has answered the adapter's first property read.
 
-While fpd is unavailable, operation methods (`enroll`, `identify`, `abort`,
+While biomd is unavailable, operation methods (`enroll`, `identify`, `abort`,
 `remove`, `rename`, `clear`) fail with
 `"errorText": "Fingerprint daemon not available"`.
 
@@ -387,13 +387,14 @@ GLib error message is passed through as `errorText` verbatim.
 |---|---|
 | `Aborted` | The operation was cancelled via `abort` or timed out (identify auto-cancels after 30 s). Never counts as a failed read. |
 | `FINGER_NOT_RECOGNIZED` | identify only, with `"finished": false` — a single non-matching touch; the sensor stays armed. |
-| `FPERROR_*` / `Enrollment failed` | fpd reported the enrollment failed; the `FPERROR_*` string is fpd's reason when it sent one. |
+| `FPERROR_*` / `Enrollment failed` | biomd reported the enrollment failed; the `FPERROR_*` string is the mapped `ErrorInfo` code when it sent one. |
 
 ## Enumerations
 
-These string values originate in droidian-fpd (which maps them from the
-Android biometrics HAL); the adapter passes them through unmodified, so the
-exact set depends on the fpd version and the device.
+biomd reports these as integers (its `BiometricState`, `BiometricError` and
+acquisition codes, straight from the Android biometrics HAL). The adapter maps
+them back onto the `FPSTATE_*`/`FPERROR_*`/`FPACQUIRED_*` strings the LS2 API
+has always used, so the vocabulary below is stable regardless of daemon.
 
 ### FPSTATE values
 
@@ -401,13 +402,15 @@ Reported in `getStatus` as `state`.
 
 | Value | Meaning |
 |---|---|
-| `FPSTATE_UNKNOWN` | fpd is unavailable (adapter-generated, always paired with `"available": false`). |
-| `FPSTATE_IDLE` | No operation running. |
-| `FPSTATE_ENROLLING` | An enrollment is in progress. |
-| `FPSTATE_IDENTIFYING` | The sensor is armed for identification. |
+| `FPSTATE_UNKNOWN` | biomd is unavailable (adapter-generated, always paired with `"available": false`), or it reported a state this adapter does not know. |
+| `FPSTATE_IDLE` | No operation running (biomd `State` 0). |
+| `FPSTATE_ENROLLING` | An enrollment is in progress (biomd `State` 1). |
+| `FPSTATE_IDENTIFYING` | The sensor is armed for identification (biomd `State` 2). |
 
-fpd may report further transient `FPSTATE_*` values (e.g. while enumerating
-or removing); clients should treat unknown states as busy.
+While a request the adapter issued is still outstanding, the state it asked for
+wins over the property, so the reported state does not flicker back to
+`FPSTATE_IDLE` between the call and biomd's `StateChanged`. Clients should
+still treat unknown states as busy.
 
 ### FPACQUIRED values
 
@@ -420,33 +423,39 @@ don't recognize.
 ## Appendix: the upstream D-Bus API
 
 For reference, the D-Bus interface the adapter consumes (see
-`files/xml/fpd.xml` for the full introspection XML):
+`files/xml/biomd.xml` for the full introspection XML):
 
 | | |
 |---|---|
 | Bus | system |
-| Name | `org.droidian.fingerprint` |
-| Object path | `/org/droidian/fingerprint` |
-| Interface | `org.droidian.fingerprint` |
+| Name | `io.FuriOS.Biomd` |
+| Object path | `/io/FuriOS/Biomd/Fingerprint` |
+| Interface | `io.FuriOS.Biomd.Fingerprint` |
 
-Methods: `Enroll(s)→i`, `Identify()→i`, `Verify()→i`, `Abort()→i`,
-`Remove(s)→i`, `Rename(s,s)→i`, `Clear()`, `GetState()→s`, `GetAll()→as`.
-Signals: `Added(s)`, `Removed(s)`, `Identified(s)`, `Aborted`, `Failed`,
-`Verified`, `StateChanged(s)`, `EnrollProgressChanged(i)`,
-`AcquisitionInfo(s)`, `ErrorInfo(s)`, `ListChanged`.
+Methods: `Enroll(s)→b`, `Identify()→b`, `StopEnroll()→b`, `StopIdentify()→b`,
+`RemoveFinger(s)→b`, `RenameFinger(s,s)→b`, `GetFingerEnrollmentDate(s)→x`.
+Signals: `StateChanged(i)`, `EnrollmentProgressChanged(i)`,
+`EnrolledFingersChanged(as)`, `ErrorInfoChanged(i)`,
+`AcquisitionInfoChanged(i)`, `Identified(s)`.
+Properties (all read-only): `State`, `EnrollmentProgress`, `EnrolledFingers`,
+`ErrorInfo`, `AcquisitionInfo`, `HardwareAvailable`, `ValidFingerNames`.
+
+Unlike droidian-fpd, biomd carries the state, the enrolled finger list and the
+last error/acquisition code as **properties** rather than only as signals, and
+answers each method with a plain boolean instead of a result code.
 
 How LS2 traffic maps onto it:
 
 | LS2 | D-Bus |
 |---|---|
-| `getStatus` | `GetState` + `GetAll`, updated from `StateChanged` and `ListChanged` |
-| `getFingerprints` | cached `GetAll` result |
-| `enroll` | `Enroll`; updates from `EnrollProgressChanged`, `AcquisitionInfo`; terminal from `Added`/`Failed`/`Aborted` |
-| `identify` | `Identify`; misses from `ErrorInfo("FINGER_NOT_RECOGNIZED")`; terminal from `Identified`/`Failed`/`Aborted` |
-| `abort` | `Abort` (`ALREADY_IDLE` treated as success) |
-| `remove` / `rename` / `clear` | `Remove` / `Rename` / `Clear` |
+| `getStatus` | `State` + `EnrolledFingers` properties, updated from `StateChanged` and `EnrolledFingersChanged` |
+| `getFingerprints` | cached `EnrolledFingers` property |
+| `enroll` | `Enroll`; updates from `EnrollmentProgressChanged`, `AcquisitionInfoChanged`; terminal from `EnrolledFingersChanged`/`ErrorInfoChanged` |
+| `identify` | `Identify`; misses from `ErrorInfoChanged(9)`; terminal from `Identified`/`ErrorInfoChanged` |
+| `abort` | `StopEnroll` or `StopIdentify`, whichever matches the running operation |
+| `remove` / `rename` | `RemoveFinger` / `RenameFinger` |
+| `clear` | one `RemoveFinger` per enrolled finger, answered once the last returns |
 
-The interface is the community reimplementation of Sailfish's
-`org.sailfishos.fingerprint1` API plus the `Clear()` addition, renamed to
-`org.droidian.fingerprint`. `Verify`/`Verified` are present in the interface
-but not exposed over LS2.
+biomd has no `Clear` and no single `Abort`, so those two LS2 methods are
+composed from the calls above. There is no `Verify` equivalent; it was never
+exposed over LS2, so nothing is lost.

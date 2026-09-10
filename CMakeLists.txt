@@ -59,16 +59,16 @@ set(GDBUS_IF_DIR ${WEBOS_BINARY_CONFIGURED_DIR}/src)
 
 file (MAKE_DIRECTORY ${GDBUS_IF_DIR})
 
-execute_process(COMMAND ${GDBUS_CODEGEN_EXECUTABLE} --c-namespace FpdInterface --generate-c-code
-						${GDBUS_IF_DIR}/fpd-interface --interface-prefix org.droidian.
-						${CMAKE_CURRENT_SOURCE_DIR}/files/xml/fpd.xml
+execute_process(COMMAND ${GDBUS_CODEGEN_EXECUTABLE} --c-namespace BiomdInterface --generate-c-code
+						${GDBUS_IF_DIR}/biomd-interface --interface-prefix io.FuriOS.Biomd.
+						${CMAKE_CURRENT_SOURCE_DIR}/files/xml/biomd.xml
 						RESULT_VARIABLE codegen_failed)
 if(codegen_failed)
-		message(FATAL_ERROR "Error in generating code for fpd interface using gdbus-codegen")
+		message(FATAL_ERROR "Error in generating code for biomd interface using gdbus-codegen")
 endif()
 
 include_directories(src ${GDBUS_IF_DIR})
-file(GLOB SOURCE_FILES src/*.c ${GDBUS_IF_DIR}/fpd-interface.c)
+file(GLOB SOURCE_FILES src/*.c ${GDBUS_IF_DIR}/biomd-interface.c)
 
 webos_add_compiler_flags(ALL -Wall)
 webos_add_linker_options(ALL --no-undefined)

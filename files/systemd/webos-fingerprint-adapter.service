@@ -1,8 +1,8 @@
 [Unit]
 Description=webOS fingerprint adapter
 Requires=ls-hubd.service
-After=ls-hubd.service droidian-fpd.service
-Wants=droidian-fpd.service
+After=ls-hubd.service biomd.service
+Wants=biomd.service
 
 [Service]
 Type=simple

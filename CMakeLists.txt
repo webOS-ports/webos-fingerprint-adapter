@@ -60,8 +60,9 @@ set(GDBUS_IF_DIR ${WEBOS_BINARY_CONFIGURED_DIR}/src)
 file (MAKE_DIRECTORY ${GDBUS_IF_DIR})
 
 execute_process(COMMAND ${GDBUS_CODEGEN_EXECUTABLE} --c-namespace BiomdInterface --generate-c-code
-						${GDBUS_IF_DIR}/biomd-interface --interface-prefix io.FuriOS.Biomd.
+						biomd-interface --interface-prefix io.FuriOS.Biomd.
 						${CMAKE_CURRENT_SOURCE_DIR}/files/xml/biomd.xml
+						WORKING_DIRECTORY ${GDBUS_IF_DIR}
 						RESULT_VARIABLE codegen_failed)
 if(codegen_failed)
 		message(FATAL_ERROR "Error in generating code for biomd interface using gdbus-codegen")

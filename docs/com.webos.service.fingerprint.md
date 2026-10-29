@@ -163,6 +163,7 @@ that the operation started.
 | Name | Required | Type | Description |
 |---|---|---|---|
 | `finger` | Required | String | Name to enroll under (e.g. `"right-index"`). Must not already exist. |
+| `token` | Required | String | The `unlockToken` luna-authmanager's `matchDevicePasscode` gave this caller: enrolling a finger takes the passcode. It is spent through `com.webos.service.auth/consumeUnlockToken` (purpose `"enroll"`) before the sensor is armed; without a good one the reply is `"Enrolling a finger takes the passcode"`. |
 | `subscribe` | Optional | Boolean | Subscribe to progress and result updates. Strongly recommended — without it only the started/failed-to-start reply is delivered. |
 
 #### Call Returns
@@ -187,7 +188,7 @@ Each update contains `returnValue` plus **one** of the following:
 #### Example
 
     luna-send -i luna://com.webos.service.fingerprint/enroll \
-        '{"finger":"right-index","subscribe":true}'
+        '{"finger":"right-index","token":"<unlockToken>","subscribe":true}'
 
 ```json
 {"returnValue": true, "subscribed": true}
@@ -216,7 +217,10 @@ cancels an identify on its own after 30 seconds without a match — re-issue
 
 A non-matching touch does **not** end the operation: fpd keeps the sensor
 armed and the adapter posts a non-terminal miss update, so the client can show
-per-touch feedback (and count attempts) without re-arming.
+per-touch feedback without re-arming. Each rejected press (at most one per
+1.2 s, as fpd reports every capture of one touch) is reported to
+luna-authmanager (`reportBiometricFailure`), whose budget, shared with face
+unlock, decides when the passcode is needed again.
 
 #### Parameters
 
@@ -239,13 +243,15 @@ per-touch feedback (and count attempts) without re-arming.
 | `finished` | Boolean | `true` on the update that ends the operation. |
 | `identified` | Boolean | Whether the touch matched an enrolled fingerprint. |
 | `finger` | String | On a match: the name of the matched fingerprint. |
+| `unlockToken` | String | On a match luna-authmanager allows: its unlock token, bound to the caller of `identify`, for `com.palm.display/control/setLockStatus`. |
+| `passcodeRequired` | Boolean | On a match luna-authmanager does not allow (no passcode entered since boot, five rejections in a row, a passcode lockout, ...): `true`, and no token. |
 | `acquisitionInfo` | String | Per-touch sensor feedback, an `FPACQUIRED_*` string. |
 | `errorText` | String | `"FINGER_NOT_RECOGNIZED"` on a per-touch miss (`"finished": false` — sensor stays armed), `"Aborted"` when the operation was cancelled or timed out. |
 
 The three shapes a client should handle:
 
 ```json
-{"returnValue": true,  "finished": true,  "identified": true,  "finger": "right-index"}
+{"returnValue": true,  "finished": true,  "identified": true,  "finger": "right-index", "unlockToken": "<32 hex digits>"}
 {"returnValue": true,  "finished": false, "identified": false, "errorText": "FINGER_NOT_RECOGNIZED"}
 {"returnValue": false, "finished": true,  "identified": false, "errorText": "Aborted"}
 ```

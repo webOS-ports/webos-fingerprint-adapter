@@ -27,6 +27,14 @@
 
 #define FINGERPRINT_SERVICE_NAME	"com.webos.service.fingerprint"
 
+#define AUTH_ISSUE_URI		"luna://com.webos.service.auth/issueBiometricToken"
+#define AUTH_FAILURE_URI	"luna://com.webos.service.auth/reportBiometricFailure"
+#define AUTH_CONSUME_URI	"luna://com.webos.service.auth/consumeUnlockToken"
+
+/* One rejection reported per press: fpd says FINGER_NOT_RECOGNIZED for every
+ * capture, several of them within a single touch. */
+#define MISS_REPORT_INTERVAL_US	(1200 * G_TIME_SPAN_MILLISECOND)
+
 #define FPD_STATE_ENROLLING		"FPSTATE_ENROLLING"
 #define FPD_STATE_IDENTIFYING	"FPSTATE_IDENTIFYING"
 
@@ -39,9 +47,16 @@ struct fingerprint_service {
 	/* The most recent ErrorInfo, so that the terminal Failed signal can
 	 * report what actually went wrong (fpd sends the reason first) */
 	gchar *last_error;
+
+	/* Who asked to identify: luna-authmanager binds the unlock token for a
+	 * match to that bus name, so only it can spend the token. */
+	gchar *identify_requester;
+	gint64 last_miss_reported;
 };
 
 /* Keeps a message alive across an asynchronous fpd call */
+static gchar *get_string_param(jvalue_ref parsed_obj, const char *name);
+
 struct fingerprint_request {
 	LSHandle *handle;
 	LSMessage *message;
@@ -162,6 +177,138 @@ static void post_finished_error(struct fingerprint_service *service,
 }
 
 /*
+ * luna-authmanager, not this adapter, decides whether a finger may unlock:
+ * a match is answered with the unlock token it issues for the one who asked
+ * to identify (no token: the passcode is needed - after a boot, after too
+ * many misses, ...), and every rejected press is reported to it.
+ */
+/* Frees a string that held a token, wiping it first (explicit_bzero is not
+ * optimised away the way a memset before free may be) */
+static void free_secret(gchar *text)
+{
+	if (text) {
+		explicit_bzero(text, strlen(text));
+		g_free(text);
+	}
+}
+
+static gchar *stringify_request(jvalue_ref obj)
+{
+	const char *text = jvalue_stringify(obj);
+	return g_strdup(text ? text : "{}");
+}
+
+struct identified_request {
+	struct fingerprint_service *service;
+	gchar *finger;
+};
+
+static void post_identified(struct fingerprint_service *service, const char *finger,
+                            const char *token)
+{
+	jvalue_ref reply_obj = jobject_create();
+
+	jobject_put(reply_obj, J_CSTR_TO_JVAL("returnValue"), jboolean_create(true));
+	jobject_put(reply_obj, J_CSTR_TO_JVAL("finished"), jboolean_create(true));
+	jobject_put(reply_obj, J_CSTR_TO_JVAL("identified"), jboolean_create(true));
+	jobject_put(reply_obj, J_CSTR_TO_JVAL("finger"), jstring_create(finger ? finger : ""));
+	if (token)
+		jobject_put(reply_obj, J_CSTR_TO_JVAL("unlockToken"), jstring_create(token));
+	else
+		jobject_put(reply_obj, J_CSTR_TO_JVAL("passcodeRequired"), jboolean_create(true));
+	luna_service_post_subscription(service->handle, "/", "identify", reply_obj);
+	j_release(&reply_obj);
+}
+
+/* The unlock token, if the reply carries one; NULL otherwise */
+static gchar *token_from_reply(LSMessage *reply)
+{
+	jvalue_ref parsed = luna_service_message_parse_and_validate(LSMessageGetPayload(reply));
+	jvalue_ref value = NULL;
+	gchar *token = NULL;
+
+	if (!parsed)
+		return NULL;
+
+	if (jobject_get_exists(parsed, J_CSTR_TO_BUF("returnValue"), &value) &&
+	    jis_boolean(value)) {
+		bool ok = false;
+		jboolean_get(value, &ok);
+		if (ok)
+			token = get_string_param(parsed, "unlockToken");
+	}
+	j_release(&parsed);
+
+	if (token && !*token) {
+		g_free(token);
+		token = NULL;
+	}
+	return token;
+}
+
+static bool token_issued_cb(LSHandle *handle, LSMessage *reply, void *user_data)
+{
+	struct identified_request *req = user_data;
+	gchar *token = token_from_reply(reply);
+
+	(void) handle;
+	if (!token)
+		g_message("A finger matched, but luna-authmanager wants the passcode");
+	post_identified(req->service, req->finger, token);
+
+	free_secret(token);
+	g_free(req->finger);
+	g_free(req);
+	return true;
+}
+
+static void request_unlock_token(struct fingerprint_service *service, const char *finger)
+{
+	struct identified_request *req = g_new0(struct identified_request, 1);
+	jvalue_ref request = jobject_create();
+	gchar *payload;
+	LSError error;
+
+	req->service = service;
+	req->finger = g_strdup(finger ? finger : "");
+
+	jobject_put(request, J_CSTR_TO_JVAL("factor"), jstring_create("fingerprint"));
+	jobject_put(request, J_CSTR_TO_JVAL("requester"),
+	            jstring_create(service->identify_requester ? service->identify_requester : ""));
+	payload = stringify_request(request);
+	j_release(&request);
+
+	LSErrorInit(&error);
+	if (!LSCallOneReply(service->handle, AUTH_ISSUE_URI, payload, token_issued_cb, req,
+	                    NULL, &error)) {
+		g_warning("Cannot ask luna-authmanager for an unlock token: %s", error.message);
+		LSErrorFree(&error);
+		post_identified(service, req->finger, NULL);
+		g_free(req->finger);
+		g_free(req);
+	}
+	g_free(payload);
+}
+
+static void report_rejection(struct fingerprint_service *service)
+{
+	gint64 now = g_get_monotonic_time();
+	LSError error;
+
+	if (service->last_miss_reported != 0 &&
+	    now - service->last_miss_reported < MISS_REPORT_INTERVAL_US)
+		return;
+	service->last_miss_reported = now;
+
+	LSErrorInit(&error);
+	if (!LSCallOneReply(service->handle, AUTH_FAILURE_URI, "{\"factor\":\"fingerprint\"}",
+	                    NULL, NULL, NULL, &error)) {
+		g_warning("Cannot report a rejected finger to luna-authmanager: %s", error.message);
+		LSErrorFree(&error);
+	}
+}
+
+/*
  * A single rejected touch while identifying. fpd keeps the sensor armed and
  * says FINGER_NOT_RECOGNIZED per capture rather than ending the operation, so
  * this is posted as a NON-terminal miss - the client shows feedback and counts
@@ -217,8 +364,10 @@ static void event_cb(struct fpd_client *client, enum fpd_event event,
 		service->last_error = g_strdup(finger_or_info);
 		/* fpd reports each non-matching capture as FINGER_NOT_RECOGNIZED and
 		 * stays armed; surface it so the lockscreen gives per-touch feedback. */
-		if (identifying && !g_strcmp0(finger_or_info, "FINGER_NOT_RECOGNIZED"))
+		if (identifying && !g_strcmp0(finger_or_info, "FINGER_NOT_RECOGNIZED")) {
+			report_rejection(service);
 			post_identify_miss(service);
+		}
 		break;
 
 	case FPD_EVENT_ADDED:
@@ -234,13 +383,8 @@ static void event_cb(struct fpd_client *client, enum fpd_event event,
 		break;
 
 	case FPD_EVENT_IDENTIFIED:
-		reply_obj = jobject_create();
-		jobject_put(reply_obj, J_CSTR_TO_JVAL("returnValue"), jboolean_create(true));
-		jobject_put(reply_obj, J_CSTR_TO_JVAL("finished"), jboolean_create(true));
-		jobject_put(reply_obj, J_CSTR_TO_JVAL("identified"), jboolean_create(true));
-		jobject_put(reply_obj, J_CSTR_TO_JVAL("finger"), jstring_create(finger_or_info));
-		luna_service_post_subscription(service->handle, "/", "identify", reply_obj);
-		j_release(&reply_obj);
+		/* Posted once luna-authmanager has answered, with its token */
+		request_unlock_token(service, finger_or_info);
 
 		g_free(service->last_error);
 		service->last_error = NULL;
@@ -353,12 +497,59 @@ static void started_reply_cb(int reply, const char *error_text, void *user_data)
 	fingerprint_request_free(req);
 }
 
+/*
+ * Enrolling a finger takes the passcode: "token" is the unlockToken
+ * luna-authmanager's matchDevicePasscode gave the caller, spent there
+ * (purpose "enroll") before fpd is asked to start.
+ */
+struct enroll_request {
+	struct fingerprint_service *service;
+	struct fingerprint_request *req;
+	gchar *finger;
+};
+
+static bool enroll_token_spent_cb(LSHandle *handle, LSMessage *reply, void *user_data)
+{
+	struct enroll_request *er = user_data;
+	jvalue_ref parsed = luna_service_message_parse_and_validate(LSMessageGetPayload(reply));
+	jvalue_ref value = NULL;
+	bool ok = false, valid = false;
+
+	(void) handle;
+	if (parsed) {
+		if (jobject_get_exists(parsed, J_CSTR_TO_BUF("returnValue"), &value) && jis_boolean(value))
+			jboolean_get(value, &ok);
+		if (jobject_get_exists(parsed, J_CSTR_TO_BUF("valid"), &value) && jis_boolean(value))
+			jboolean_get(value, &valid);
+		j_release(&parsed);
+	}
+
+	if (ok && valid) {
+		/* req goes on to fpd, which answers and frees it */
+		fpd_client_enroll(er->service->client, er->finger, started_reply_cb, er->req);
+	} else {
+		luna_service_message_reply_custom_error(er->req->handle, er->req->message,
+			"Enrolling a finger takes the passcode");
+		fingerprint_request_free(er->req);
+	}
+
+	g_free(er->finger);
+	g_free(er);
+	return true;
+}
+
 static bool _service_enroll_cb(LSHandle *handle, LSMessage *message, void *user_data)
 {
 	struct fingerprint_service *service = user_data;
 	jvalue_ref parsed_obj = NULL;
+	jvalue_ref request = NULL;
 	gchar *finger = NULL;
+	gchar *token = NULL;
+	gchar *payload = NULL;
+	const char *requester;
+	struct enroll_request *er;
 	bool subscribed;
+	LSError error;
 
 	parsed_obj = luna_service_message_parse_and_validate(LSMessageGetPayload(message));
 	if (!parsed_obj) {
@@ -367,21 +558,53 @@ static bool _service_enroll_cb(LSHandle *handle, LSMessage *message, void *user_
 	}
 
 	finger = get_string_param(parsed_obj, "finger");
+	token = get_string_param(parsed_obj, "token");
 	j_release(&parsed_obj);
 
 	if (!finger || !strlen(finger)) {
 		luna_service_message_reply_error_invalid_params(handle, message);
-		g_free(finger);
-		return true;
+		goto out;
+	}
+
+	requester = LSMessageGetSenderServiceName(message);
+	if (!token || !strlen(token) || !requester || !*requester) {
+		luna_service_message_reply_custom_error(handle, message,
+			"Enrolling a finger takes the passcode");
+		goto out;
 	}
 
 	/* Enrollment takes many touches: the progress and the result come as
 	 * updates on this subscription */
 	subscribed = luna_service_check_for_subscription_and_process(handle, message);
 
-	fpd_client_enroll(service->client, finger, started_reply_cb,
-	                  fingerprint_request_new(handle, message, subscribed));
+	request = jobject_create();
+	jobject_put(request, J_CSTR_TO_JVAL("token"), jstring_create(token));
+	jobject_put(request, J_CSTR_TO_JVAL("requester"), jstring_create(requester));
+	jobject_put(request, J_CSTR_TO_JVAL("purpose"), jstring_create("enroll"));
+	payload = stringify_request(request);
+	j_release(&request);
 
+	er = g_new0(struct enroll_request, 1);
+	er->service = service;
+	er->req = fingerprint_request_new(handle, message, subscribed);
+	er->finger = finger;
+	finger = NULL;
+
+	LSErrorInit(&error);
+	if (!LSCallOneReply(handle, AUTH_CONSUME_URI, payload, enroll_token_spent_cb, er,
+	                    NULL, &error)) {
+		g_warning("Cannot reach luna-authmanager: %s", error.message);
+		LSErrorFree(&error);
+		luna_service_message_reply_custom_error(handle, message,
+			"Enrolling a finger takes the passcode");
+		fingerprint_request_free(er->req);
+		g_free(er->finger);
+		g_free(er);
+	}
+
+out:
+	free_secret(payload);
+	free_secret(token);
 	g_free(finger);
 
 	return true;
@@ -390,7 +613,11 @@ static bool _service_enroll_cb(LSHandle *handle, LSMessage *message, void *user_
 static bool _service_identify_cb(LSHandle *handle, LSMessage *message, void *user_data)
 {
 	struct fingerprint_service *service = user_data;
+	const char *requester = LSMessageGetSenderServiceName(message);
 	bool subscribed;
+
+	g_free(service->identify_requester);
+	service->identify_requester = g_strdup(requester ? requester : "");
 
 	subscribed = luna_service_check_for_subscription_and_process(handle, message);
 
@@ -593,6 +820,7 @@ void fingerprint_service_free(struct fingerprint_service *service)
 	}
 
 	g_free(service->last_error);
+	g_free(service->identify_requester);
 	g_free(service);
 }
 

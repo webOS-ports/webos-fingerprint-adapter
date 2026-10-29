@@ -81,4 +81,11 @@ target_link_libraries(webos-fingerprint-adapter
     rt pthread)
 
 webos_build_daemon()
+
+# Unit tests (not part of the image): cmake -DBUILD_TESTING=ON
+option(BUILD_TESTING "Build the unit tests" OFF)
+if(BUILD_TESTING)
+	enable_testing()
+	add_subdirectory(tests)
+endif()
 webos_build_system_bus_files()

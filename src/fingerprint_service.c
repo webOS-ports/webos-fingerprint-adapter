@@ -24,6 +24,7 @@
 #include "fingerprint_service.h"
 #include "fpd_client.h"
 #include "luna_service_utils.h"
+#include "identify_post.h"
 
 #define FINGERPRINT_SERVICE_NAME	"com.webos.service.fingerprint"
 
@@ -48,9 +49,10 @@ struct fingerprint_service {
 	 * report what actually went wrong (fpd sends the reason first) */
 	gchar *last_error;
 
-	/* Who asked to identify: luna-authmanager binds the unlock token for a
-	 * match to that bus name, so only it can spend the token. */
-	gchar *identify_requester;
+	/* The identify call now running: luna-authmanager binds the unlock token
+	 * for a match to its bus name, and the token is posted on its
+	 * subscription only. Held with LSMessageRef. */
+	LSMessage *identify_call;
 	gint64 last_miss_reported;
 };
 
@@ -198,26 +200,21 @@ static gchar *stringify_request(jvalue_ref obj)
 	return g_strdup(text ? text : "{}");
 }
 
+/* A match waiting for luna-authmanager's token. caller is the identify call
+ * it belongs to (a reference of its own), so a new identify meanwhile cannot
+ * be handed the token another caller's match earned. */
 struct identified_request {
 	struct fingerprint_service *service;
+	LSMessage *caller;
 	gchar *finger;
 };
 
-static void post_identified(struct fingerprint_service *service, const char *finger,
-                            const char *token)
+static void identified_request_free(struct identified_request *req)
 {
-	jvalue_ref reply_obj = jobject_create();
-
-	jobject_put(reply_obj, J_CSTR_TO_JVAL("returnValue"), jboolean_create(true));
-	jobject_put(reply_obj, J_CSTR_TO_JVAL("finished"), jboolean_create(true));
-	jobject_put(reply_obj, J_CSTR_TO_JVAL("identified"), jboolean_create(true));
-	jobject_put(reply_obj, J_CSTR_TO_JVAL("finger"), jstring_create(finger ? finger : ""));
-	if (token)
-		jobject_put(reply_obj, J_CSTR_TO_JVAL("unlockToken"), jstring_create(token));
-	else
-		jobject_put(reply_obj, J_CSTR_TO_JVAL("passcodeRequired"), jboolean_create(true));
-	luna_service_post_subscription(service->handle, "/", "identify", reply_obj);
-	j_release(&reply_obj);
+	if (req->caller)
+		LSMessageUnref(req->caller);
+	g_free(req->finger);
+	g_free(req);
 }
 
 /* The unlock token, if the reply carries one; NULL otherwise */
@@ -254,11 +251,10 @@ static bool token_issued_cb(LSHandle *handle, LSMessage *reply, void *user_data)
 	(void) handle;
 	if (!token)
 		g_message("A finger matched, but luna-authmanager wants the passcode");
-	post_identified(req->service, req->finger, token);
+	identify_post_match(req->service->handle, req->caller, req->finger, token);
 
 	free_secret(token);
-	g_free(req->finger);
-	g_free(req);
+	identified_request_free(req);
 	return true;
 }
 
@@ -266,15 +262,20 @@ static void request_unlock_token(struct fingerprint_service *service, const char
 {
 	struct identified_request *req = g_new0(struct identified_request, 1);
 	jvalue_ref request = jobject_create();
+	const char *requester = NULL;
 	gchar *payload;
 	LSError error;
 
 	req->service = service;
 	req->finger = g_strdup(finger ? finger : "");
+	req->caller = service->identify_call;
+	if (req->caller) {
+		LSMessageRef(req->caller);
+		requester = LSMessageGetSenderServiceName(req->caller);
+	}
 
 	jobject_put(request, J_CSTR_TO_JVAL("factor"), jstring_create("fingerprint"));
-	jobject_put(request, J_CSTR_TO_JVAL("requester"),
-	            jstring_create(service->identify_requester ? service->identify_requester : ""));
+	jobject_put(request, J_CSTR_TO_JVAL("requester"), jstring_create(requester ? requester : ""));
 	payload = stringify_request(request);
 	j_release(&request);
 
@@ -283,9 +284,8 @@ static void request_unlock_token(struct fingerprint_service *service, const char
 	                    NULL, &error)) {
 		g_warning("Cannot ask luna-authmanager for an unlock token: %s", error.message);
 		LSErrorFree(&error);
-		post_identified(service, req->finger, NULL);
-		g_free(req->finger);
-		g_free(req);
+		identify_post_match(service->handle, req->caller, req->finger, NULL);
+		identified_request_free(req);
 	}
 	g_free(payload);
 }
@@ -613,11 +613,12 @@ out:
 static bool _service_identify_cb(LSHandle *handle, LSMessage *message, void *user_data)
 {
 	struct fingerprint_service *service = user_data;
-	const char *requester = LSMessageGetSenderServiceName(message);
 	bool subscribed;
 
-	g_free(service->identify_requester);
-	service->identify_requester = g_strdup(requester ? requester : "");
+	if (service->identify_call)
+		LSMessageUnref(service->identify_call);
+	service->identify_call = message;
+	LSMessageRef(message);
 
 	subscribed = luna_service_check_for_subscription_and_process(handle, message);
 
@@ -820,7 +821,8 @@ void fingerprint_service_free(struct fingerprint_service *service)
 	}
 
 	g_free(service->last_error);
-	g_free(service->identify_requester);
+	if (service->identify_call)
+		LSMessageUnref(service->identify_call);
 	g_free(service);
 }
 

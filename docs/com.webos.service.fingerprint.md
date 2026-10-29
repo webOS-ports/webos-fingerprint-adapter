@@ -243,7 +243,7 @@ unlock, decides when the passcode is needed again.
 | `finished` | Boolean | `true` on the update that ends the operation. |
 | `identified` | Boolean | Whether the touch matched an enrolled fingerprint. |
 | `finger` | String | On a match: the name of the matched fingerprint. |
-| `unlockToken` | String | On a match luna-authmanager allows: its unlock token, bound to the caller of `identify`, for `com.palm.display/control/setLockStatus`. |
+| `unlockToken` | String | On a match luna-authmanager allows: its unlock token, bound to the caller of `identify`, for `com.palm.display/control/setLockStatus`. Sent on that caller's subscription only; every other subscriber gets the same update without it. |
 | `passcodeRequired` | Boolean | On a match luna-authmanager does not allow (no passcode entered since boot, five rejections in a row, a passcode lockout, ...): `true`, and no token. |
 | `acquisitionInfo` | String | Per-touch sensor feedback, an `FPACQUIRED_*` string. |
 | `errorText` | String | `"FINGER_NOT_RECOGNIZED"` on a per-touch miss (`"finished": false` — sensor stays armed), `"Aborted"` when the operation was cancelled or timed out. |

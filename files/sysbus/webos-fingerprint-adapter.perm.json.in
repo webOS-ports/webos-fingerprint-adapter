@@ -1,7 +1,9 @@
 {
     "com.webos.service.fingerprint": [
         "fingerprint.operation",
-        "fingerprint.query"
+        "fingerprint.query",
+        "auth.biometric",
+        "auth.unlocktoken"
     ],
     "com.webos.surfacemanager*": [
         "fingerprint.operation",

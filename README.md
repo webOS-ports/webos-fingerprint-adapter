@@ -143,6 +143,14 @@ How to Build on Linux
 The directory under which the files are installed defaults to
 `/usr/local/webos`. Supply `WEBOS_INSTALL_ROOT` to `cmake` to change that.
 
+## Tests
+
+`cmake -DBUILD_TESTING=ON` also builds `fingerprint-adapter-tests` (gtest, so
+it needs a C++ compiler and googletest): `src/identify_post.c` against a fake
+libluna-service2 (`tests/fake_ls2.cpp`) and the real pbnjson. It checks that a
+matched finger's unlock token goes on the identify caller's subscription and
+no other.
+
 # Copyright and License Information
 
 Unless otherwise specified, all content, including all source code files and

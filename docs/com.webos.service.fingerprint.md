@@ -39,11 +39,20 @@ translates its D-Bus API into a webOS-style service API.
 | ACG | Methods |
 |---|---|
 | `fingerprint.operation` | all methods |
+| `fingerprint.identify` | `getStatus`, `identify`, `abort` |
 | `fingerprint.query` | `getStatus`, `getFingerprints` |
 
 `com.webos.surfacemanager*` (the compositor, for the lockscreen) is granted
-both groups out of the box; other clients need the matching ACG in their
-manifest.
+`fingerprint.operation` and `fingerprint.query` out of the box; other
+clients need the matching ACG in their manifest. An app that only lets its
+user in with a fingerprint asks for `fingerprint.identify`, which cannot
+enroll, rename or remove fingerprints.
+
+Identify updates go to every subscriber of `identify` (see
+[Subscription semantics](#subscription-semantics)), so a client should keep
+its subscription only while it is in front, and cancel it (and `abort`)
+when it is not, or it may see the result of an identify that the lockscreen
+started.
 
 ## General Behavior
 

@@ -187,3 +187,34 @@ TEST_F(IdentifyPost, SameCall)
     EXPECT_FALSE(identify_same_call(a, nullptr));
     EXPECT_FALSE(identify_same_call(nullptr, a));
 }
+
+// The sensor's own lockout has to reach the lock screen as a lockout: as a plain
+// abort, the shell re-arms, fails again, and never says why it stopped.
+TEST_F(IdentifyPost, ALockoutIsToldAsALockout)
+{
+    LSMessage *shell = fakels2::subscribe("/identify", "com.webos.surfacemanager-cardshell", 1);
+
+    identify_post_failure(handle(), IDENTIFY_LOCKOUT_ERROR);
+
+    jvalue_ref o = only(shell);
+    EXPECT_TRUE(flag(o, "lockedOut"));
+    EXPECT_TRUE(flag(o, "finished"));
+    EXPECT_FALSE(flag(o, "identified"));
+    j_release(&o);
+}
+
+TEST_F(IdentifyPost, AnyOtherFailureIsAnAbort)
+{
+    for (const char *reason : {"FPERROR_UNABLE_TO_PROCESS", static_cast<const char *>(nullptr)})
+    {
+        LSMessage *shell = fakels2::subscribe("/identify", "com.webos.surfacemanager-cardshell", 1);
+
+        identify_post_failure(handle(), reason);
+
+        jvalue_ref o = only(shell);
+        EXPECT_FALSE(has(o, "lockedOut"));
+        EXPECT_EQ("Aborted", text(o, "errorText"));
+        j_release(&o);
+        fakels2::reset();
+    }
+}

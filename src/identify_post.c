@@ -100,4 +100,29 @@ void identify_post_match(LSHandle *handle, LSMessage *caller, const char *finger
 	g_free(for_others);
 }
 
+void identify_post_failure(LSHandle *handle, const char *last_error)
+{
+	const char *payload = g_strcmp0(last_error, IDENTIFY_LOCKOUT_ERROR) == 0
+		? "{\"returnValue\":false,\"finished\":true,\"identified\":false,"
+		  "\"lockedOut\":true,\"errorText\":\"Too many attempts\"}"
+		: "{\"returnValue\":false,\"finished\":true,\"identified\":false,"
+		  "\"errorText\":\"Aborted\"}";
+	LSSubscriptionIter *iter = NULL;
+	LSError error;
+
+	LSErrorInit(&error);
+	if (!LSSubscriptionAcquire(handle, IDENTIFY_KEY, &iter, &error)) {
+		g_warning("Cannot reach the identify subscribers: %s", error.message);
+		LSErrorFree(&error);
+		return;
+	}
+	while (LSSubscriptionHasNext(iter)) {
+		if (!LSMessageRespond(LSSubscriptionNext(iter), payload, &error)) {
+			g_warning("Cannot post the identify update: %s", error.message);
+			LSErrorFree(&error);
+		}
+	}
+	LSSubscriptionRelease(iter);
+}
+
 // vim:ts=4:sw=4:noexpandtab

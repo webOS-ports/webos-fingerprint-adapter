@@ -41,6 +41,15 @@ bool identify_same_call(LSMessage *a, LSMessage *b);
 void identify_post_match(LSHandle *handle, LSMessage *caller, const char *finger,
                          const char *token);
 
+/*
+ * Posts the end of an identify that failed, last_error being biomd's reason.
+ * Anything but a lockout goes out as "Aborted", which a client re-arms from.
+ * The sensor's own lockout after too many misses is "lockedOut": true, because
+ * re-arming only fails again and nobody would ever be told why.
+ */
+#define IDENTIFY_LOCKOUT_ERROR "FPERROR_LOCKOUT"
+void identify_post_failure(LSHandle *handle, const char *last_error);
+
 #ifdef __cplusplus
 }
 #endif

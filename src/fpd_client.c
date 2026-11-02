@@ -669,6 +669,16 @@ void fpd_client_identify(struct fpd_client *client, fpd_reply_cb cb, void *user_
 		return;
 	}
 
+	/* biomd outlives its clients: after this service or the compositor restarts
+	 * it is still identifying for whoever asked last, and refuses a new Identify
+	 * for as long as that lasts. Its signals reach us all the same, so that run
+	 * serves this caller too. */
+	if (client->state == BIOMD_STATE_IDENTIFYING) {
+		client->active_op = OP_IDENTIFY;
+		cb(FPD_REPLY_STARTED, NULL, user_data);
+		return;
+	}
+
 	req = fpd_req_new(client, cb, user_data);
 	req->op_started = OP_IDENTIFY;
 	client->active_op = OP_IDENTIFY;

@@ -395,7 +395,7 @@ static void event_cb(struct fpd_client *client, enum fpd_event event,
 			post_finished_error(service, "enroll", FALSE,
 			                    service->last_error ? service->last_error : "Enrollment failed");
 		else if (identifying)
-			post_finished_error(service, "identify", TRUE, "Aborted");
+			identify_post_failure(service->handle, service->last_error);
 
 		g_free(service->last_error);
 		service->last_error = NULL;
